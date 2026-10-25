@@ -242,6 +242,12 @@ function onResize(){if(!renderer)return;camera.aspect=window.innerWidth/window.i
 function mat(color,roughness=.7,metalness=0,emissive=0x000000,emissiveIntensity=0){return new THREE.MeshStandardMaterial({color,roughness,metalness,emissive,emissiveIntensity});}
 function glossyMat(color, roughness=.28, metalness=.38){return new THREE.MeshPhysicalMaterial({color,roughness,metalness,clearcoat:.9,clearcoatRoughness:.22});}
 function addMesh(geo,material,parent=scene,pos=[0,0,0],rot=[0,0,0],scale=null){const m=new THREE.Mesh(geo,material);m.position.set(...pos);m.rotation.set(...rot);if(scale)m.scale.set(...scale);if(quality==='high'){m.castShadow=true;m.receiveShadow=true;}parent.add(m);worldObjects.push(m);return m;}
+
+/* Register a circular collision boundary for buildings, trees, rocks, cones, and props. */
+function addCollider(x, z, r, type = 'solid') {
+  if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(r)) return;
+  colliders.push({ x, z, r: Math.max(0, r), type });
+}
 function clearWorld(){
  // Dispose nested meshes/materials too: the upgraded maps contain many more details.
  const geometries=new Set(),materials=new Set(),textures=new Set();

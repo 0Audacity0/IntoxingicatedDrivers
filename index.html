@@ -73,9 +73,29 @@
 <div class="modal-wrap" id="pause-modal"><div class="modal"><div class="eyebrow">Time out</div><h2 id="pause-title">PAUSED</h2><p id="pause-copy">Catch your breath. The road isn't going anywhere.</p><div class="modal-actions"><button class="secondary-btn" id="resume-btn">Resume</button><button class="primary-btn" id="restart-btn">Restart Run</button></div><div style="margin-top:10px"><button class="secondary-btn" id="pause-menu-btn" style="width:100%">Back to Garage</button></div></div></div>
 <div class="modal-wrap" id="multiplayer-modal" role="dialog" aria-modal="true" aria-labelledby="multiplayer-title"><div class="modal"><div class="eyebrow">Online play roadmap</div><h2 id="multiplayer-title">MULTIPLAYER</h2><p><strong style="color:var(--lime)">Coming in a future update.</strong> This version is single-player and does not connect to online sessions yet. Multiplayer is planned as a separate feature, not something this button pretends to launch.</p><div class="settings-row"><label>Private lobbies & room codes</label><span style="color:var(--muted);font-size:10px">PLANNED</span></div><div class="settings-row"><label>Drive together across maps</label><span style="color:var(--muted);font-size:10px">PLANNED</span></div><div class="settings-row"><label>Bring your custom cars</label><span style="color:var(--muted);font-size:10px">PLANNED</span></div><div class="modal-actions" style="margin-top:20px"><button class="primary-btn" id="multiplayer-close">Got it</button></div></div></div>
 <div class="modal-wrap" id="settings-modal"><div class="modal"><div class="eyebrow">Tune the experience</div><h2>SETTINGS</h2><p>Adjust the presentation for your setup.</p><div class="settings-row"><label for="quality-select">Graphics quality</label><select id="quality-select"><option value="high">High</option><option value="low">Low</option></select></div><div class="settings-row"><label for="camera-select">Camera distance</label><select id="camera-select"><option value="near">Near</option><option value="normal" selected>Normal</option><option value="far">Far</option></select></div><div class="settings-row"><label for="shakes-select">Camera shake</label><select id="shakes-select"><option value="on" selected>On</option><option value="off">Off</option></select></div><div class="modal-actions" style="margin-top:20px"><button class="primary-btn" id="settings-close">Done</button></div></div></div>
-<div id="boot-error"><div class="boot-card"><h2>3D engine couldn't start</h2><p>This game uses Three.js from a CDN and needs an internet connection to launch. The procedural cars, maps, materials, and props are built locally by the code after that engine loads. Open the file in a modern browser, or upload it to GitHub Pages and open the published Pages URL.</p></div></div>
+<div id="boot-error"><div class="boot-card"><h2>3D engine couldn't start</h2><p>The game could not finish initializing. See the diagnostic details below.</p><pre id="boot-details" style="white-space:pre-wrap;overflow-wrap:anywhere;text-align:left;background:#111722;border:1px solid #2b3748;border-radius:10px;padding:12px;color:#d5e1ef;font-size:12px;max-height:38vh;overflow:auto"></pre><p>Try refreshing the published GitHub Pages URL. If WebGL failed, enable hardware acceleration in Chrome and restart the browser.</p></div></div>
 <script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+// Load Three.js with fallbacks. If a CDN is blocked, the boot screen will report it clearly.
+let THREE = null;
+let threeLoadError = null;
+const threeLoadErrors = [];
+const THREE_CDNS = [
+  'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js',
+  'https://unpkg.com/three@0.160.0/build/three.module.js',
+  'https://esm.sh/three@0.160.0'
+];
+for (const threeUrl of THREE_CDNS) {
+  try {
+    THREE = await import(threeUrl);
+    console.info('[Overdrive Mayhem] Three.js loaded from', threeUrl);
+    break;
+  } catch (err) {
+    threeLoadError = err;
+    threeLoadErrors.push(threeUrl + ' -> ' + (err?.message || String(err)));
+    console.warn('[Overdrive Mayhem] Three.js CDN failed:', threeUrl, err);
+  }
+}
+let startupStage = 'preparing the game';
 
 /* ========================================================================
    OVERDRIVE MAYHEM — MODDING HUB
@@ -765,8 +785,32 @@ $('restart-btn').addEventListener('click',()=>initRun());$('pause-menu-btn').add
 window.addEventListener('keydown',e=>{keys[e.code]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();if(e.code==='Escape'&&gameActive){if(paused){if(!runFinished){paused=false;$('pause-modal').style.display='none';}}else{paused=true;$('pause-modal').style.display='flex';$('pause-title').textContent='PAUSED';$('pause-copy').textContent='Catch your breath. The road is still waiting.';$('resume-btn').textContent='Resume';}}if(e.code==='KeyR'&&gameActive&&player){player.mesh.position.set(0,0,0);player.vel=0;player.yaw=0;player.mesh.rotation.y=0;showToast('Car reset');}});
 window.addEventListener('keyup',e=>{keys[e.code]=false;});
 
-try{initRenderer();createMapWorld(selectedMap);player={mesh:createCarModel(selectedCar,selectedColor,false),yaw:0,vel:0};player.mesh.position.set(0,0,0);camera.position.set(13,8,17);camera.lookAt(0,1,0);mainLoop();}
-catch(err){console.error(err);$('boot-error').style.display='flex';}
+if (!THREE) {
+  const boot = document.getElementById('boot-error');
+  boot.style.display = 'flex';
+  boot.querySelector('h2').textContent = 'Could not load Three.js';
+  boot.querySelector('p').textContent = 'Your browser could not download the 3D engine from the available CDNs. Check your internet connection, extensions, DNS, or network filtering, then refresh.';
+  document.getElementById('boot-details').textContent = threeLoadErrors.join('\n\n') || (threeLoadError?.message || 'No additional error details were provided.');
+} else {
+  try {
+    startupStage = 'creating the WebGL renderer';
+    initRenderer();
+    startupStage = 'building the ' + selectedMap + ' map';
+    createMapWorld(selectedMap);
+    startupStage = 'building the ' + selectedCar + ' vehicle';
+    player={mesh:createCarModel(selectedCar,selectedColor,false),yaw:0,vel:0};
+    player.mesh.position.set(0,0,0);camera.position.set(13,8,17);camera.lookAt(0,1,0);
+    startupStage = 'starting the animation loop';
+    mainLoop();
+  } catch(err) {
+    console.error('[Overdrive Mayhem] Startup error at ' + startupStage, err);
+    const boot = document.getElementById('boot-error');
+    boot.style.display='flex';
+    boot.querySelector('h2').textContent='Game startup failed';
+    boot.querySelector('p').textContent='Three.js loaded, but the game failed while ' + startupStage + '.';
+    document.getElementById('boot-details').textContent = String(err?.stack || err?.message || err);
+  }
+}
 </script>
 </body>
 </html>

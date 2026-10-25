@@ -38,10 +38,10 @@
         <div class="choice-scroll" id="setup-scroll" aria-label="Vehicle, color, map, and game mode options">
         <div class="section-head"><div class="section-title">01 / Choose your ride</div><div class="section-note">PAINT IS YOURS</div></div>
         <div class="car-grid" id="car-grid">
-          <button class="car-option selected" data-car="cop"><div class="car-symbol">🚓</div><b>Cop Car</b><small>Stable cruiser</small></button>
+          <button class="car-option" data-car="cop"><div class="car-symbol">🚓</div><b>Cop Car</b><small>Stable cruiser</small></button>
           <button class="car-option" data-car="wiener"><div class="car-symbol">🌭</div><b>Weiner Mobile</b><small>Long & ridiculous</small></button>
           <button class="car-option" data-car="sedan"><div class="car-symbol">🚗</div><b>Regular Car</b><small>Balanced all-rounder</small></button>
-          <button class="car-option" data-car="suv"><div class="car-symbol">🚙</div><b>Random SUV</b><small>Fresh build each run</small></button>
+          <button class="car-option selected" data-car="suv"><div class="car-symbol">🚙</div><b>Random SUV</b><small>Fresh build each run</small></button>
         </div>
         <div class="section-head"><div class="section-title">02 / Pick a paint job</div><div class="color-name" id="color-name">LIME PUNCH</div></div>
         <div class="color-row" id="color-row">
@@ -106,6 +106,7 @@ let startupStage = 'preparing the game';
    • VEHICLE_SPECS: the dimensions/traits used by the procedural car builder.
    • mapDefs / modeDefs: map palettes and game mode text/rules below.
    • colorNames and the .swatch buttons in the HTML: paint options.
+   • CITY DETAIL SHOP / spawnCityTraffic(): tweak downtown props and traffic routes.
    Most vehicle detailing is grouped inside createCarModel().
    No external art files are required; the models are procedural Three.js meshes.
    ======================================================================== */
@@ -130,7 +131,8 @@ const MODDING = {
     handbrakeSteeringRate: 2.25,
     boostDrain: 27,
     boostRecharge: 9,
-    botCount: 4
+    botCount: 4,
+    cityTrafficCount: 4
   },
   world: {
     roadShoulderExtra: 2.8,
@@ -152,7 +154,7 @@ const $ = id => document.getElementById(id);
 const stage = $('stage');
 let renderer, scene, camera, clock;
 let gameActive = false, paused = false, menuOpen = true;
-let selectedCar = 'cop', selectedColor = '#c7ff45', selectedMap = 'city', selectedMode = 'free';
+let selectedCar = 'suv', selectedColor = '#c7ff45', selectedMap = 'city', selectedMode = 'free';
 let player = null, bots = [], colliders = [], pickups = [], hazardObjects = [], trails = [], checkpoints = [], worldObjects = [], cones = [];
 let score = 0, health = 100, elapsed = 0, runTime = 0, hazardClock = 0, objectiveIndex = 0, potatoClock = 18, potatoCarrier = 'player', simonClock = 0, simonPrompt = 'boost', simonDone = false, toastTimer = 0, boostAmount = 100;
 let keys = {}, lastFrame = 0, fpsCounter = 0, fpsTime = 0, fpsNow = 60, quality = 'high', cameraMode = 'normal', cameraShake = true, hitCooldown = 0, runFinished = false;
@@ -350,6 +352,7 @@ function addBuilding(x,z,w,h,d,color){
   // Four slim corner columns give the façade a crisp architectural outline.
   for(const sx of [-1,1])for(const sz of [-1,1]){const col=addMesh(new THREE.BoxGeometry(.12,h,.12),frame,scene,[x+sx*(w/2-.15),h/2,z+sz*(d/2-.15)]);col.castShadow=false;col.receiveShadow=false;}
  }
+ if(selectedMap==='city') addCityBuildingDetails(x,z,w,h,d);
 }
 function addTree(x,z,style='normal',size=1){
  const trunk=addMesh(new THREE.CylinderGeometry(.32*size,.48*size,2.1*size,7),mat(style==='snow'?0x625c54:style==='desert'?0x7d5739:0x594735),scene,[x,1.0*size,z]);trunk.castShadow=false;
@@ -381,17 +384,151 @@ function addCheckpoint(x,z,index,total){const color=mapDefs[selectedMap].accent;
  checkpoints.push({x,z,group:g,index,total,active:index===0});
 }
 function addCone(x,z){const g=new THREE.Group();g.position.set(x,.05,z);scene.add(g);worldObjects.push(g);const base=new THREE.Mesh(new THREE.CylinderGeometry(.6,.65,.16,8),mat(0x20262c));base.position.y=.08;g.add(base);const cone=new THREE.Mesh(new THREE.ConeGeometry(.42,1.35,8),mat(0xff994d,.8,0,0x5b2110,.15));cone.position.y=.82;g.add(cone);const stripe=new THREE.Mesh(new THREE.CylinderGeometry(.28,.35,.16,8),mat(0xf5f4e9));stripe.position.y=.72;g.add(stripe);cones.push({x,z,group:g,hit:false});addCollider(x,z,.5,'cone');}
+/* CITY DETAIL SHOP: street furniture, storefronts, crosswalks, traffic signals, and a plaza. */
+const CITY_SIGN_LABELS = ['AUTO','DINER','MARKET','ARCADE','CAFE','MOTEL','PHARMACY','CITY BANK','PIZZA','RECORDS','MOTOR CO','HOTEL'];
+const CITY_SIGN_COLORS = [0x087f8c,0x8b2d59,0x254e70,0x9b4f1e,0x345c3a,0x4d3c82,0x9c3036];
+function citySignMaterial(label, backgroundColor){
+ const canvas=document.createElement('canvas');canvas.width=512;canvas.height=128;
+ const ctx=canvas.getContext('2d');
+ const hex='#'+backgroundColor.toString(16).padStart(6,'0');
+ ctx.fillStyle=hex;ctx.fillRect(0,0,512,128);
+ ctx.fillStyle='rgba(0,0,0,.18)';ctx.fillRect(0,94,512,34);
+ ctx.strokeStyle='#f4f7fb';ctx.lineWidth=8;ctx.strokeRect(8,8,496,112);
+ ctx.fillStyle='#ffffff';ctx.textAlign='center';ctx.textBaseline='middle';
+ const words=String(label).toUpperCase();
+ ctx.font=`900 ${words.length>9?39:52}px Arial, sans-serif`;ctx.fillText(words,256,62,464);
+ const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=4;
+ return new THREE.MeshStandardMaterial({map:texture,roughness:.56,metalness:.08,emissive:backgroundColor,emissiveIntensity:.12});
+}
+function addCityMesh(geo,material,parent=scene,pos=[0,0,0],rot=[0,0,0],scale=null){
+ const mesh=addMesh(geo,material,parent,pos,rot,scale);
+ // City clutter is mostly static and doesn't need to participate in the shadow pass.
+ mesh.castShadow=false;mesh.receiveShadow=false;
+ return mesh;
+}
+function addCityBuildingDetails(x,z,w,h,d){
+ // Ground-level storefront: a sign, canopy, display windows, and a recessed doorway.
+ const front=z-d/2-.09;
+ const signW=Math.max(5.2,Math.min(w-1.1,w*.78));
+ const signY=Math.min(3.6,h*.24+1.2);
+ const signColor=pick(CITY_SIGN_COLORS);
+ addCityMesh(new THREE.BoxGeometry(signW+.22,.68,.24),mat(0x17242d,.52,.22),scene,[x,signY,front-.07]);
+ const sign=new THREE.Mesh(new THREE.PlaneGeometry(signW,.49),citySignMaterial(pick(CITY_SIGN_LABELS),signColor));
+ sign.position.set(x,signY,front-.205);sign.rotation.y=Math.PI;sign.castShadow=false;scene.add(sign);worldObjects.push(sign);
+ const awningY=signY-.58;
+ const awningW=Math.min(w-1,signW+1.1);
+ addCityMesh(new THREE.BoxGeometry(awningW,.16,.72),mat(signColor,.42,.1,signColor,.18),scene,[x,awningY,front-.39]);
+ // Light-colored awning valance and three fabric panels create a readable street-level silhouette.
+ addCityMesh(new THREE.BoxGeometry(awningW,.16,.10),mat(0xe8edf0,.56,.04),scene,[x,awningY-.10,front-.75]);
+ for(let i=0;i<4;i++){
+  const paneW=Math.max(.9,(w-2.0)/4);
+  const paneX=x-w/2+1.0+(i+.5)*(w-2.0)/4;
+  const pane=new THREE.Mesh(new THREE.BoxGeometry(paneW,.98,.055),mat(i%2?0x286179:0x3c8197,.22,.22,0x17495d,.18));
+  pane.position.set(paneX,1.40,front-.035);scene.add(pane);worldObjects.push(pane);
+  addCityMesh(new THREE.BoxGeometry(.075,1.08,.09),mat(0x202b34,.62,.18),scene,[paneX-paneW/2,1.40,front-.07]);
+ }
+ const doorX=x+w*.31;
+ addCityMesh(new THREE.BoxGeometry(.92,1.82,.09),mat(0x182a35,.32,.22),scene,[doorX,1.0,front-.08]);
+ addCityMesh(new THREE.BoxGeometry(.66,1.47,.06),mat(0x4a8796,.22,.25,0x1a4758,.16),scene,[doorX,1.02,front-.14]);
+ addCityMesh(new THREE.SphereGeometry(.055,8,6),mat(0xffd77d,.3,.4),scene,[doorX+.31,1.0,front-.19]);
+ // Accent strips and roof machinery make the buildings read as occupied city blocks, not plain boxes.
+ if(h>17){
+  const stripe=mat(signColor,.48,.2,signColor,.12);
+  for(const sx of [-1,1])addCityMesh(new THREE.BoxGeometry(.22,h*.72,.09),stripe,scene,[x+sx*(w/2-.42),h*.56,z-d/2-.07]);
+ }
+ if(h>12&&Math.random()<.72){
+  const hvacMat=mat(0x66737b,.78,.28),vents=mat(0x333e46,.83,.12);
+  const count=1+Math.floor(Math.random()*3);
+  for(let i=0;i<count;i++){
+   const hx=x+rand(-w*.25,w*.25),hz=z+rand(-d*.22,d*.22),hh=rand(.55,1.2);
+   addCityMesh(new THREE.BoxGeometry(rand(1.1,2.1),hh,rand(.9,1.8)),hvacMat,scene,[hx,h+hh/2,hz]);
+   addCityMesh(new THREE.BoxGeometry(.7,.08,.08),vents,scene,[hx,h+hh*.55,hz-.25]);
+  }
+ }
+ if(h>28&&Math.random()<.42){
+  const tankX=x+rand(-w*.18,w*.18),tankZ=z+rand(-d*.18,d*.18);
+  addCityMesh(new THREE.CylinderGeometry(1.1,1.1,1.5,12),mat(0x87949b,.74,.35),scene,[tankX,h+.9,tankZ]);
+  addCityMesh(new THREE.CylinderGeometry(1.16,1.16,.10,12),mat(0x33434d,.54,.42),scene,[tankX,h+1.7,tankZ]);
+ }
+}
+function addCitySidewalks(){
+ const sidewalkMat=mat(0x929da2,.96,.02),curbMat=mat(0xc4c9c9,.91,.02);
+ for(let p=-180;p<=180;p+=60){
+  for(const side of [-1,1]){
+   const s=addCityMesh(new THREE.BoxGeometry(1.45,.18,520),sidewalkMat,scene,[p+side*11.1,.035,0]);s.castShadow=false;
+   const curb=addCityMesh(new THREE.BoxGeometry(.16,.23,520),curbMat,scene,[p+side*9.98,.045,0]);curb.castShadow=false;
+   const sh=addCityMesh(new THREE.BoxGeometry(520,.18,1.45),sidewalkMat,scene,[0,.035,p+side*11.1],[0,0,0]);sh.castShadow=false;
+   const ch=addCityMesh(new THREE.BoxGeometry(520,.23,.16),curbMat,scene,[0,.045,p+side*9.98]);ch.castShadow=false;
+  }
+ }
+}
+function addCityCrosswalks(){
+ const intersections=[-120,-60,0,60,120],vertical=[],horizontal=[];
+ for(const x of intersections)for(const z of intersections){
+  for(const side of [-1,1])for(let stripe=-2;stripe<=2;stripe++){
+   vertical.push([x,.085,z+side*8.5+stripe*.68]);
+   horizontal.push([x+side*8.5+stripe*.68,.085,z]);
+  }
+ }
+ const white=mat(0xe4e7e9,.85,.02);
+ for(const [geometry,items] of [[new THREE.BoxGeometry(12.5,.045,.42),vertical],[new THREE.BoxGeometry(.42,.045,12.5),horizontal]]){
+  const inst=new THREE.InstancedMesh(geometry,white,items.length),dummy=new THREE.Object3D();
+  items.forEach((p,i)=>{dummy.position.set(p[0],p[1],p[2]);dummy.updateMatrix();inst.setMatrixAt(i,dummy.matrix);});
+  inst.instanceMatrix.needsUpdate=true;inst.castShadow=false;inst.receiveShadow=false;scene.add(inst);worldObjects.push(inst);
+ }
+}
+function addCityTrafficSignal(x,z){
+ const poleX=x+9.1,poleZ=z+9.1,dark=mat(0x252d34,.55,.38),housing=mat(0x151c22,.5,.25);
+ addCityMesh(new THREE.CylinderGeometry(.085,.11,4.2,8),dark,scene,[poleX,2.1,poleZ]);
+ addCityMesh(new THREE.BoxGeometry(.48,1.12,.42),housing,scene,[poleX,3.35,poleZ]);
+ const lensColors=[0xff3c48,0xffbd3d,0x41db75];
+ lensColors.forEach((c,i)=>addCityMesh(new THREE.SphereGeometry(.135,10,8),mat(c,.25,.05,c,i===2?1.15:.55),scene,[poleX,3.69-i*.32,poleZ-.225]));
+ addCityMesh(new THREE.BoxGeometry(1.0,.09,.09),dark,scene,[poleX-.25,4.0,poleZ]);
+}
+function addCityPark(x,z){
+ const grass=mat(0x37794d,.98,.01),stone=mat(0x7c898d,.85,.02);
+ addCityMesh(new THREE.BoxGeometry(26,.16,26),grass,scene,[x,.04,z]);
+ for(const side of [-1,1]){
+  addCityMesh(new THREE.BoxGeometry(27,.32,.45),stone,scene,[x+side*13,.16,z]);
+  addCityMesh(new THREE.BoxGeometry(.45,.32,27),stone,scene,[x,.16,z+side*13]);
+ }
+ const basin=addCityMesh(new THREE.CylinderGeometry(3.1,3.35,.48,20),mat(0xb8c4c9,.42,.32),scene,[x,.36,z]);
+ addCityMesh(new THREE.CylinderGeometry(2.55,2.65,.12,20),mat(0x2b9eb8,.22,.25,0x087a99,.45),scene,[x,.67,z]);
+ addCityMesh(new THREE.CylinderGeometry(.42,.6,1.7,12),mat(0x8aa5b1,.28,.34),scene,[x,1.45,z]);
+ addCityMesh(new THREE.SphereGeometry(.62,12,10),mat(0x79d8ed,.22,.12,0x28c4ef,.85),scene,[x,2.35,z]);
+ for(const [dx,dz] of [[-8,-8],[8,-8],[-8,8],[8,8]])addTree(x+dx,z+dz,'normal',.7);
+ for(const [dx,dz] of [[-5,0],[5,0],[0,-5],[0,5]]){
+  addCityMesh(new THREE.BoxGeometry(2.4,.16,.6),mat(0x68472e,.78,.02),scene,[x+dx,.58,z+dz]);
+  addCityMesh(new THREE.BoxGeometry(2.35,.12,.16),mat(0x34424a,.76,.1),scene,[x+dx,1.0,z+dz]);
+ }
+ addCollider(x,z,2.6,'fountain');
+}
+
 function createMapWorld(mapId){
  selectedMap=mapId;const def=mapDefs[mapId];makeLights(def);addGround(def);
  const roadColor=def.road;
  const gridLine=(x,z,w,l,a=0)=>addRoad(x,z,w,l,a,{color:roadColor,edges:mapId==='neon'?0x653f8a:undefined});
  if(mapId==='city'||mapId==='industrial'){
   for(let p=-180;p<=180;p+=60){gridLine(p,0,17,520,0);gridLine(0,p,17,520,Math.PI/2);}
-  for(let x=-150;x<=150;x+=60){for(let z=-150;z<=150;z+=60){if(Math.random()<.14)continue;
-    if(mapId==='city'){const h=rand(12,44);addBuilding(x+rand(-12,12),z+rand(-12,12),rand(15,27),h,rand(15,27),pick([0x394957,0x465866,0x526471,0x5c6872,0x354650]));}
-    else {for(let j=0;j<3;j++){const cx=x+rand(-18,18),cz=z+rand(-16,16);const box=addMesh(new THREE.BoxGeometry(rand(7,14),rand(2,5),rand(9,15)),mat(pick([0x416879,0x8b5949,0x737e84,0x394f5c])),scene,[cx,1.8,cz]);addCollider(cx,cz,4,'container');}}
-  }}
-  for(let x=-180;x<=180;x+=60){for(let z=-180;z<=180;z+=60){if(Math.random()<.62)addLamp(x+9,z+12,mapId==='neon');}}
+  if(mapId==='city'){
+   // Keep buildings inside the blocks instead of letting random offsets spill across the road lanes.
+   for(let x=-150;x<=150;x+=60){for(let z=-150;z<=150;z+=60){
+    if(Math.abs(x-90)<1&&Math.abs(z-90)<1)continue; // a pocket park adds variety to the skyline
+    if(Math.random()<.10)continue;
+    const bx=x+rand(-4.5,4.5),bz=z+rand(-4.5,4.5),w=rand(17,23.5),d=rand(17,23.5),h=rand(14,58);
+    addBuilding(bx,bz,w,h,d,pick([0x394957,0x465866,0x526471,0x5c6872,0x354650,0x6a747b,0x544f58,0x3c5661]));
+   }}
+   addCitySidewalks();addCityCrosswalks();addCityPark(90,90);
+   for(const x of [-120,-60,0,60,120])for(const z of [-120,-60,0,60,120]){
+    if((x===0&&z===0)||Math.random()<.36)continue;
+    addCityTrafficSignal(x,z);
+   }
+  } else {
+   for(let x=-150;x<=150;x+=60){for(let z=-150;z<=150;z+=60){if(Math.random()<.14)continue;
+    for(let j=0;j<3;j++){const cx=x+rand(-18,18),cz=z+rand(-16,16);const box=addMesh(new THREE.BoxGeometry(rand(7,14),rand(2,5),rand(9,15)),mat(pick([0x416879,0x8b5949,0x737e84,0x394f5c])),scene,[cx,1.8,cz]);addCollider(cx,cz,4,'container');}
+   }}
+  }
+  for(let x=-180;x<=180;x+=60){for(let z=-180;z<=180;z+=60){if(Math.random()<.62)addLamp(x+9,z+12,false);}}
  } else if(mapId==='desert'){
   const pts=[];for(let i=0;i<=16;i++){const z=-260+i*32;pts.push({x:Math.sin(i*.58)*62+Math.sin(i*.17)*22,z});}for(let i=0;i<pts.length-1;i++)roadBetween(pts[i],pts[i+1],18,{color:roadColor,stripe:0xe5bd76,edges:0xd78b50});
   for(let i=0;i<75;i++){const x=rand(-275,275),z=rand(-280,280);if(Math.abs(x-Math.sin((z+260)/32*.58)*62)>35)addRock(x,z,rand(2,8),pick([0x8c6549,0x75503c,0xc09767]));}
@@ -603,19 +740,41 @@ function createCarModel(type,color,isBot=false){
  return root;
 }
 function createPlayer(){
- let type=selectedCar;if(type==='suv')type=pick(['suv','suv','suv']);
+ const type=selectedCar; // SUV proportions/trim vary randomly inside createCarModel() each time a run starts.
  player={mesh:createCarModel(type,selectedColor,false),type,vel:0,yaw:0,steer:0,boost:100,hop:0,hopVel:0,score:0,collisions:0,trailPoints:[],grounded:true,checkpoint:0,hasOrb:false};
  player.mesh.position.set(0,0,0);player.mesh.rotation.y=0;
 }
 function createBot(type='sedan',x=12,z=-18,color=0xff4f64,role='rival'){
- const bot={mesh:createCarModel(type,color,true),type,vel:0,yaw:rand(-Math.PI,Math.PI),steer:0,role,angle:rand(0,Math.PI*2),route:rand(0,Math.PI*2),target:null,trailPoints:[],timer:0,hasOrb:false};bot.mesh.position.set(x,0,z);bot.mesh.rotation.y=bot.yaw;bots.push(bot);return bot;
+ const bot={mesh:createCarModel(type,color,true),type,vel:0,yaw:rand(-Math.PI,Math.PI),steer:0,role,angle:rand(0,Math.PI*2),route:rand(0,Math.PI*2),target:null,trailPoints:[],timer:0,hasOrb:false,routePoints:null,routeIndex:0,cruiseSpeed:20};bot.mesh.position.set(x,0,z);bot.mesh.rotation.y=bot.yaw;bots.push(bot);return bot;
+}
+function spawnCityTraffic(){
+ // A rectangular loop follows real city streets. Each car targets the next intersection
+ // rather than orbiting randomly through building blocks.
+ const route=[
+  {x:-120,z:-120},{x:0,z:-120},{x:120,z:-120},{x:120,z:0},
+  {x:120,z:120},{x:0,z:120},{x:-120,z:120},{x:-120,z:0}
+ ];
+ const starts=[
+  {index:0,type:'sedan',color:0xff4f64},
+  {index:2,type:'suv',color:0x39d9ff},
+  {index:4,type:'wiener',color:0xff994d},
+  {index:6,type:'sedan',color:0xffdf47}
+ ];
+ const amount=clamp(MODDING.driving.cityTrafficCount||4,1,starts.length);
+ for(let i=0;i<amount;i++){
+  const item=starts[i],point=route[item.index];
+  const bot=createBot(item.type,point.x,point.z,item.color,'traffic');
+  bot.routePoints=route;bot.routeIndex=(item.index+1)%route.length;bot.cruiseSpeed=rand(15,23);
+  const next=route[bot.routeIndex];bot.yaw=Math.atan2(-(next.x-point.x),-(next.z-point.z));bot.mesh.rotation.y=bot.yaw;
+ }
 }
 function spawnVehicles(){
  createPlayer();
+ if(selectedMap==='city')spawnCityTraffic();
  if(selectedMode==='cop'){
   createBot('cop',rand(-15,15),-35,0xf4f4f4,'cop');
   createBot('sedan',-28,12,0x3c94d8,'rival');createBot('suv',34,16,0xff994d,'rival');
- }else{
+ }else if(selectedMap!=='city'){
   const rivals=[
    {type:'sedan',x:-20,z:-20,color:0xff4f64},
    {type:'suv',x:22,z:-26,color:0x39d9ff},
@@ -697,11 +856,16 @@ function updateBots(dt){
  if(!player)return;
  bots.forEach((b,i)=>{
    const p=b.mesh.position;let targetX,targetZ;
-   if(selectedMode==='cop'&&b.role==='cop'){targetX=player.mesh.position.x;targetZ=player.mesh.position.z;}
+   const cityTraffic=b.role==='traffic'&&selectedMap==='city'&&Array.isArray(b.routePoints)&&b.routePoints.length>1;
+   if(cityTraffic){
+    let waypoint=b.routePoints[b.routeIndex];
+    if(Math.hypot(waypoint.x-p.x,waypoint.z-p.z)<12){b.routeIndex=(b.routeIndex+1)%b.routePoints.length;waypoint=b.routePoints[b.routeIndex];}
+    targetX=waypoint.x;targetZ=waypoint.z;
+   }else if(selectedMode==='cop'&&b.role==='cop'){targetX=player.mesh.position.x;targetZ=player.mesh.position.z;}
    else if(selectedMode==='potato'&&b.hasOrb){targetX=0;targetZ=0;}
    else {const radius=selectedMap==='skyway'?70:95;const a=b.angle;targetX=Math.sin(a)*radius;targetZ=Math.cos(a)*radius;const d=Math.hypot(targetX-p.x,targetZ-p.z);if(d<14)b.angle+=rand(1.3,2.8);}
-   const dx=targetX-p.x,dz=targetZ-p.z;const desired=Math.atan2(-dx,-dz);let dif=((desired-b.yaw+Math.PI*3)%(Math.PI*2))-Math.PI;b.yaw+=clamp(dif,-1.7*dt,1.7*dt);
-   const desiredSpeed=(selectedMode==='cop'&&b.role==='cop')?31:rand(17,27);b.vel=THREE.MathUtils.damp(b.vel,desiredSpeed,.8,dt);
+   const dx=targetX-p.x,dz=targetZ-p.z;const desired=Math.atan2(-dx,-dz);let dif=((desired-b.yaw+Math.PI*3)%(Math.PI*2))-Math.PI;b.yaw+=clamp(dif,-(cityTraffic?1.35:1.7)*dt,(cityTraffic?1.35:1.7)*dt);
+   const desiredSpeed=(selectedMode==='cop'&&b.role==='cop')?31:(cityTraffic?b.cruiseSpeed:rand(17,27));b.vel=THREE.MathUtils.damp(b.vel,desiredSpeed,cityTraffic?1.15:.8,dt);
    p.x+=-Math.sin(b.yaw)*b.vel*dt;p.z+=-Math.cos(b.yaw)*b.vel*dt;p.y=.0;b.mesh.rotation.y=b.yaw;
    if(b.mesh.userData.wheels)for(const w of b.mesh.userData.wheels)w.rotation.x+=b.vel*dt*1.8;
    b.timer+=dt;
@@ -737,7 +901,18 @@ function finishRun(won,title){if(runFinished)return;runFinished=true;paused=true
 function updateCamera(dt){if(!player)return;const p=player.mesh.position;const distance=cameraMode==='near'?8:cameraMode==='far'?15:11;const height=cameraMode==='near'?4.4:cameraMode==='far'?7.6:5.8;const offset=v3(Math.sin(player.yaw)*distance,height,Math.cos(player.yaw)*distance);const desired=p.clone().add(offset);camera.position.lerp(desired,1-Math.pow(.001,dt));const look=p.clone().add(v3(0,1.1,0)).add(forwardVec(player.yaw).multiplyScalar(6));if(cameraShake&&Math.abs(player.vel)>30){look.x+=rand(-.08,.08);look.y+=rand(-.06,.06);}camera.lookAt(look);}
 function updateVehicleLights(){
  const vehicleRoots=[...(player?[player.mesh]:[]),...bots.map(b=>b.mesh)];
- for(const root of vehicleRoots){if(!root||!root.userData)continue;const ud=root.userData;if(ud.sirenPieces){const pulse=Math.sin(elapsed*14)>0;ud.sirenPieces[0].material.emissiveIntensity=pulse?3.2:.25;ud.sirenPieces[1].material.emissiveIntensity=pulse?.25:3.2;}}
+ for(const root of vehicleRoots){
+  if(!root||!root.userData)continue;
+  const ud=root.userData;
+  // Only police cars have two siren meshes. Empty arrays are truthy in JavaScript,
+  // so check the array length before touching its entries; otherwise every frame
+  // would throw before handlePlayer() runs and non-cop cars appear frozen.
+  if(Array.isArray(ud.sirenPieces)&&ud.sirenPieces.length>=2&&ud.sirenPieces[0]&&ud.sirenPieces[1]){
+   const pulse=Math.sin(elapsed*14)>0;
+   ud.sirenPieces[0].material.emissiveIntensity=pulse?3.2:.25;
+   ud.sirenPieces[1].material.emissiveIntensity=pulse?.25:3.2;
+  }
+ }
 }
 function updateEffects(dt){
  for(const tr of trails){tr.age+=dt;tr.mesh.material.transparent=true;tr.mesh.material.opacity=clamp(1-tr.age/3,0,1);tr.mesh.scale.setScalar(Math.max(.05,1-tr.age/3));if(tr.age>3){scene.remove(tr.mesh);tr.mesh.geometry.dispose();tr.mesh.material.dispose();}}
